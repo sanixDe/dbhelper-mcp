@@ -28,7 +28,7 @@ Built for use with [Claude Code](https://claude.ai/claude-code), [Cursor](https:
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/dbhelper-mcp.git
+git clone https://github.com/sanixDe/dbhelper-mcp.git
 cd dbhelper-mcp
 npm install
 ```
