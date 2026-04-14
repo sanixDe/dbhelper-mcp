@@ -1,6 +1,8 @@
 import { z } from "zod";
 import sql from "mssql";
 import { getPool } from "../connection-pool.js";
+import { logAudit, startTimer } from "../logger.js";
+import { checkRateLimit } from "../rate-limiter.js";
 
 export const describeStoredProcedureToolName = "describe_stored_procedure";
 
@@ -23,6 +25,28 @@ export async function describeStoredProcedureHandler({
   database: string;
   procedure: string;
 }) {
+  const elapsed = startTimer();
+
+  const rateCheck = checkRateLimit();
+  if (!rateCheck.allowed) {
+    logAudit({
+      timestamp: new Date().toISOString(),
+      tool: describeStoredProcedureToolName,
+      database,
+      durationMs: elapsed(),
+      blocked: true,
+      blockedReason: "Rate limit exceeded",
+    });
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `Rate limit exceeded. Try again in ${Math.ceil((rateCheck.retryAfterMs ?? 0) / 1000)}s.`,
+        },
+      ],
+    };
+  }
+
   try {
     const pool = await getPool(database);
 
@@ -54,7 +78,16 @@ export async function describeStoredProcedureHandler({
     const definition =
       defResult.recordset[0]?.Definition ?? null;
 
+    const durationMs = elapsed();
+
     if (!definition) {
+      logAudit({
+        timestamp: new Date().toISOString(),
+        tool: describeStoredProcedureToolName,
+        database,
+        durationMs,
+        rowCount: 0,
+      });
       return {
         content: [
           {
@@ -65,6 +98,14 @@ export async function describeStoredProcedureHandler({
       };
     }
 
+    logAudit({
+      timestamp: new Date().toISOString(),
+      tool: describeStoredProcedureToolName,
+      database,
+      durationMs,
+      rowCount: paramResult.recordset.length,
+    });
+
     return {
       content: [
         {
@@ -74,6 +115,7 @@ export async function describeStoredProcedureHandler({
               database,
               procedure,
               parameterCount: paramResult.recordset.length,
+              durationMs,
               parameters: paramResult.recordset,
               definition,
             },
@@ -83,10 +125,21 @@ export async function describeStoredProcedureHandler({
         },
       ],
     };
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const durationMs = elapsed();
+    const message = err instanceof Error ? err.message : "Unknown error";
+
+    logAudit({
+      timestamp: new Date().toISOString(),
+      tool: describeStoredProcedureToolName,
+      database,
+      durationMs,
+      error: message,
+    });
+
     return {
       content: [
-        { type: "text" as const, text: `Error: ${err.message}` },
+        { type: "text" as const, text: `Error: ${message}` },
       ],
     };
   }

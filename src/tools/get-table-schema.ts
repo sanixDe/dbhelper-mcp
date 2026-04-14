@@ -1,6 +1,8 @@
 import { z } from "zod";
 import sql from "mssql";
 import { getPool } from "../connection-pool.js";
+import { logAudit, startTimer } from "../logger.js";
+import { checkRateLimit } from "../rate-limiter.js";
 
 export const getTableSchemaToolName = "get_table_schema";
 
@@ -27,6 +29,28 @@ export async function getTableSchemaHandler({
   table: string;
   schema: string;
 }) {
+  const elapsed = startTimer();
+
+  const rateCheck = checkRateLimit();
+  if (!rateCheck.allowed) {
+    logAudit({
+      timestamp: new Date().toISOString(),
+      tool: getTableSchemaToolName,
+      database,
+      durationMs: elapsed(),
+      blocked: true,
+      blockedReason: "Rate limit exceeded",
+    });
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `Rate limit exceeded. Try again in ${Math.ceil((rateCheck.retryAfterMs ?? 0) / 1000)}s.`,
+        },
+      ],
+    };
+  }
+
   try {
     const pool = await getPool(database);
     const result = await pool
@@ -72,7 +96,16 @@ export async function getTableSchemaHandler({
         ORDER BY c.ORDINAL_POSITION
       `);
 
+    const durationMs = elapsed();
+
     if (result.recordset.length === 0) {
+      logAudit({
+        timestamp: new Date().toISOString(),
+        tool: getTableSchemaToolName,
+        database,
+        durationMs,
+        rowCount: 0,
+      });
       return {
         content: [
           {
@@ -83,6 +116,14 @@ export async function getTableSchemaHandler({
       };
     }
 
+    logAudit({
+      timestamp: new Date().toISOString(),
+      tool: getTableSchemaToolName,
+      database,
+      durationMs,
+      rowCount: result.recordset.length,
+    });
+
     return {
       content: [
         {
@@ -92,6 +133,7 @@ export async function getTableSchemaHandler({
               database,
               table: `${schema}.${table}`,
               columnCount: result.recordset.length,
+              durationMs,
               columns: result.recordset,
             },
             null,
@@ -100,10 +142,21 @@ export async function getTableSchemaHandler({
         },
       ],
     };
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const durationMs = elapsed();
+    const message = err instanceof Error ? err.message : "Unknown error";
+
+    logAudit({
+      timestamp: new Date().toISOString(),
+      tool: getTableSchemaToolName,
+      database,
+      durationMs,
+      error: message,
+    });
+
     return {
       content: [
-        { type: "text" as const, text: `Error: ${err.message}` },
+        { type: "text" as const, text: `Error: ${message}` },
       ],
     };
   }

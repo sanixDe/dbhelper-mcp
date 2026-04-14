@@ -1,5 +1,5 @@
-import { z } from "zod";
 import { DATABASE_REGISTRY } from "../config.js";
+import { logAudit, startTimer } from "../logger.js";
 
 export const listDatabasesToolName = "list_databases";
 
@@ -9,6 +9,8 @@ export const listDatabasesDescription =
 export const listDatabasesParams = {};
 
 export async function listDatabasesHandler() {
+  const elapsed = startTimer();
+
   const databases = DATABASE_REGISTRY.map((d) => ({
     name: d.name,
     displayName: d.displayName,
@@ -21,6 +23,16 @@ export async function listDatabasesHandler() {
   const nonprodCount = databases.filter(
     (d) => d.environment === "nonprod"
   ).length;
+
+  const durationMs = elapsed();
+
+  logAudit({
+    timestamp: new Date().toISOString(),
+    tool: listDatabasesToolName,
+    database: "*",
+    durationMs,
+    rowCount: databases.length,
+  });
 
   return {
     content: [
